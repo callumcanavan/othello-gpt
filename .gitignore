@@ -1,0 +1,7 @@
+env/
+.ipynb_checkpoints
+__pycache__/
+board_seqs_*.pth
+.pytest_cache/
+synthetic_model.pth
+*.pth
