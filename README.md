@@ -1,1 +1,1 @@
-# Mechanistic Interpretation of OthelloGPT
+## OthelloGPT Board Probe Exploration
