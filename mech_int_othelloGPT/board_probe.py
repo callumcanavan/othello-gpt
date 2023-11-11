@@ -9,7 +9,7 @@ import torch
 
 import einops
 from fancy_einsum import einsum
-from torcheval.metrics.functional import multiclass_f1_score
+from torcheval.metrics.functional import multiclass_f1_score, binary_f1_score
 from tqdm import tqdm, trange
 
 from datetime import datetime
@@ -255,7 +255,7 @@ def train(config):
                             done_training = True
 
 
-def evaluate(probe_dir, hook="resid_post"):
+def evaluate(probe_dir, hook="resid_post", device="cpu"):
     """
     Evaluate probe model.
     """
@@ -297,7 +297,7 @@ def evaluate(probe_dir, hook="resid_post"):
         accs = []
         per_timestep_num_correct = torch.zeros((59, 8, 8))
         total = 0
-        linear_probe = torch.load(os.path.join(probe_dir, f"resid_{layer}_linear.pth"), map_location="mps")
+        linear_probe = torch.load(os.path.join(probe_dir, f"resid_{layer}_linear.pth"), map_location=device)
         test_layer = layer
         total = 0
         all_preds = []
@@ -312,10 +312,10 @@ def evaluate(probe_dir, hook="resid_post"):
             ]
             state_stack_one_hot = state_stack_to_one_hot_threeway(
                 state_stack
-            ).to("mps")
+            ).to(device)
 
             logits, cache = othello_gpt.run_with_cache(
-                _games_int.to("mps")[:, :-1], return_type="logits"
+                _games_int.to(device)[:, :-1], return_type="logits"
             )
             resid = cache[hook, test_layer][
                 :, pos_start:pos_end
@@ -343,14 +343,13 @@ def evaluate(probe_dir, hook="resid_post"):
         f1_score = multiclass_f1_score(
             _all_preds.view(-1), _all_gt.view(-1), num_classes=3
         )
-        f1_scores_by_class = []
+        f1_by_class = []
         for i in range(3):
-            f1_scores_by_class.append(
-                multiclass_f1_score(
-                    _all_preds.view(-1), _all_gt.view(-1), num_classes=3, average=None
-                )[i]
+            f1_by_class.append(
+                binary_f1_score(
+                    _all_preds.view(-1) == i, _all_gt.view(-1) == i
+                )
             )
-        raise Exception("stop")
         # f1_score_by_class = multiclass_f1_score(
         #     _all_preds.view(-1), _all_gt.view(-1), num_classes=3, average=None
         # )
@@ -359,7 +358,7 @@ def evaluate(probe_dir, hook="resid_post"):
         all_accs.append(acc)
         all_per_timestep_acc.append(per_timestep_acc)
         f1_scores.append(f1_score)
-        f1_scores_by_class.append(f1_score_by_class)
+        f1_scores_by_class.append(f1_by_class)
     return torch.tensor(all_accs), all_per_timestep_acc, torch.tensor(f1_scores), torch.tensor(f1_scores_by_class)
 
 

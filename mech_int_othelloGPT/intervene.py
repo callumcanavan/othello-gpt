@@ -10,17 +10,17 @@ import pickle
 import torch
 from tqdm import tqdm
 
-from data import get_othello
-from data.othello import permit, OthelloBoardState, permit_reverse
-from mingpt.dataset import CharDataset
-from mech_int.tl_othello_utils import (
+from .data import get_othello
+from .othello import permit, OthelloBoardState, permit_reverse
+from .dataset import CharDataset
+from .tl_othello_utils import (
     load_hooked_model,
     to_board_label,
     ITOS,
     run_with_cache_and_hooks,
 )
-from constants import OTHELLO_HOME
-from mingpt.utils import set_seed
+from .constants import OTHELLO_HOME
+from .utils import set_seed
 
 set_seed(44)
 
@@ -42,59 +42,54 @@ intv_data = [
 
 _othello = get_othello(ood_perc=0.0, data_root=None, wthor=False, ood_num=1)
 train_dataset = CharDataset(_othello)
-
-
-probes = {}
-probe_dir = os.path.join(OTHELLO_HOME, "mech_int/probes/linear")
-for layer in range(8):
-    probes[layer] = torch.load(
-        os.path.join(probe_dir, f"resid_{layer}_linear.pth")
-    )
-    probes[layer].requires_grad = False
-
 othello_gpt = load_hooked_model("synthetic")
 
+def intervene(probe_dir, layers, hook, device="mps"):
+    probes = {}
+    for layer in range(8):
+        probes[layer] = torch.load(
+            os.path.join(probe_dir, f"resid_{layer}_linear.pth"), map_location=torch.device(device)
+        )
+        probes[layer].requires_grad = False
 
-def patch_heads(
-    modified_heads,
-    hook,
-    probe_layer,
-    from_player,
-    row,
-    col,
-    move_idx,
-):
-    add_vector = None
-    if move_idx % 2 == 0:
-        # White's turn to play, flipping white's cell.
-        if from_player == 0:
-            add_vector = probes[probe_layer][0, ..., row, col, 2]
-        elif from_player == 2:
-            add_vector = probes[probe_layer][0, ..., row, col, 1]
+    def patch_heads(
+        modified_heads,
+        hook,
+        probe_layer,
+        from_player,
+        row,
+        col,
+        move_idx,
+    ):
+        add_vector = None
+        if move_idx % 2 == 0:
+            # White's turn to play, flipping white's cell.
+            if from_player == 0:
+                add_vector = probes[probe_layer][0, ..., row, col, 2]
+            elif from_player == 2:
+                add_vector = probes[probe_layer][0, ..., row, col, 1]
+            else:
+                raise RuntimeError("Unexpected from_player value.")
+
         else:
-            raise RuntimeError("Unexpected from_player value.")
+            if from_player == 0:
+                add_vector = probes[probe_layer][0, ..., row, col, 1]
+            elif from_player == 2:
+                add_vector = probes[probe_layer][0, ..., row, col, 2]
+            else:
+                raise RuntimeError("Unexpected from_player value.")
 
-    else:
-        if from_player == 0:
-            add_vector = probes[probe_layer][0, ..., row, col, 1]
-        elif from_player == 2:
-            add_vector = probes[probe_layer][0, ..., row, col, 2]
-        else:
-            raise RuntimeError("Unexpected from_player value.")
+        scale = 2.3
+        modified_heads[:, -1, :] = modified_heads[:, -1, :] + (
+            scale * (add_vector / add_vector.norm())
+        )
+        return modified_heads
 
-    scale = 2.3
-    modified_heads[:, -1, :] = modified_heads[:, -1, :] + (
-        scale * (add_vector / add_vector.norm())
-    )
-    return modified_heads
-
-
-def intervene(device="mps"):
     false_positives = []
     false_negatives = []
     false_positives_null_intv = []
     false_negatives_null_intv = []
-    for _sample in tqdm(intv_data):
+    for _sample in intv_data:
         board_state = OthelloBoardState()
         completion = _sample["completion"]
         board_state.update(completion)
@@ -149,14 +144,7 @@ def intervene(device="mps"):
 
         (patched_logits, modified_cache) = run_with_cache_and_hooks(
             othello_gpt,
-            [
-                ("blocks.2.hook_attn_out", hook_fns[5]),
-                ("blocks.3.hook_attn_out", hook_fns[5]),
-                ("blocks.4.hook_attn_out", hook_fns[5]),
-                ("blocks.5.hook_attn_out", hook_fns[5]),
-                ("blocks.6.hook_attn_out", hook_fns[5]),
-                ("blocks.7.hook_attn_out", hook_fns[5]),
-            ],
+            list((f"blocks.{layer}.hook_{hook}", hook_fns[layer]) for layer in layers),
             partial_game,
         )
 
